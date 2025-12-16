@@ -73,6 +73,63 @@ class Bird(pg.sprite.Sprite):
         self.rect.center = xy
         self.speed = 10
 
+        # ================================
+        # ここから skill 機能のための追加変数
+        # ================================
+        # 無敵状態かどうかを表すフラグ
+        # True なら爆弾に当たってもゲームオーバーにならない（後で判定側で使用する）
+        self.invincible = False
+
+        # 無敵があと何フレーム残っているかを管理するタイマー
+        # 例：50FPS想定のため 5秒 = 50*5 = 250フレーム
+        self.invincible_timer = 0
+
+        # 発射レート（何フレームに1回撃てるか）を管理する変数
+        # 通常時は 10フレームに1回（= shot_interval が 10）
+        # skill中は 5フレームに1回（= shot_interval が 5）
+        self.shot_interval = 10
+
+        # 「最後に撃ってから何フレーム経過したか」を管理するタイマー
+        # 毎フレーム加算し、shot_interval以上になったら発射可能とする
+        self.shot_timer = 0
+
+        # スキル使用回数（skill_count）
+        # スキル発動のたびに 1 減り、0 のときは発動できない
+        # 初期値はここで自由に調整可能（例として3回に設定）
+        self.skill_count = 0
+
+    def skill(self, fps: int = 50) -> bool:
+        """
+        skill（スキル）を発動するためのメソッド（追加機能）
+        要件：
+        ・スキルを発動したら5秒の無敵時間
+        ・shot_interval（発射レート）を通常10フレーム→5フレームにする
+        ・スキルを使ったらskill_countを1減らす
+        ・skill_countが0ならスキルを使えない（発動不可）
+
+        引数 fps：
+        ・ゲームのFPS（このプログラムはclock.tick(50)なので基本50）
+        ・5秒を「fps*5フレーム」に換算するために使用する
+        戻り値：
+        ・発動できた場合 True
+        ・skill_countが0で発動できない場合 False
+        """
+        # スキル回数が0以下なら発動不可（要件：0で使えない）
+        if self.skill_count <= 0:
+            return False
+
+        # スキル回数を消費（要件：使ったら1減らす）
+        self.skill_count -= 1
+
+        # 無敵を付与（要件：5秒無敵）
+        self.invincible = True
+        self.invincible_timer = fps * 5  # 50FPSなら250フレーム
+
+        # 発射レートを上げる（要件：通常10→5）
+        self.shot_interval = 5
+
+        return True
+
     def change_img(self, num: int, screen: pg.Surface):
         """
         こうかとん画像を切り替え，画面に転送する
@@ -99,6 +156,28 @@ class Bird(pg.sprite.Sprite):
         if not (sum_mv[0] == 0 and sum_mv[1] == 0):
             self.dire = tuple(sum_mv)
             self.image = self.imgs[self.dire]
+
+        # ==========================================
+        # ここから skill（無敵・発射レート）管理の追加処理
+        # ==========================================
+        # 無敵状態のときは invincible_timer を毎フレーム減らす
+        # 0以下になったら無敵解除し、発射レートも通常値に戻す
+        if self.invincible:
+            self.invincible_timer -= 1
+            if self.invincible_timer <= 0:
+                # 無敵終了
+                self.invincible = False
+                # 発射レートを通常に戻す（要件：スキル中だけ5フレーム）
+                self.shot_interval = 10
+                # ※shot_timerはそのままでも問題ないが、
+                #   発射感覚を自然にするなら0に戻しても良い。
+                #   今回は「元のコード構造を崩さない」ため、変更しない。
+
+        # 発射レート制御用のタイマーを毎フレーム進める
+        # 「撃つ」処理はmain側のキーイベントで行うが、
+        # shot_timerの更新は鳥の状態管理としてBird側で扱う
+        self.shot_timer += 1
+
         screen.blit(self.image, self.rect)
 
 
@@ -344,14 +423,44 @@ def main():
         for event in pg.event.get():
             if event.type == pg.QUIT:
                 return 0
+
             if event.type == pg.KEYDOWN and event.key == pg.K_SPACE:
-                if pg.key.get_pressed()[pg.K_LSHIFT]:
-                    nb = NeoBeam(bird, 5)
-                    dmk = nb.gen_beams()
-                    beams.add(dmk)
-                else:
+                # ============================================================
+                # 発射レート（shot_interval）による発射制御（追加機能）
+                # ============================================================
+                # bird.shot_timer はBird.update内で毎フレーム加算されている
+                # ここでは「shot_timerがshot_interval以上なら撃てる」と判定している
+                #
+                # 例：
+                # ・通常：shot_interval = 10 → 10フレームに1回
+                # ・skill中：shot_interval = 5 → 5フレームに1回（発射レート上昇）
+                #
+                # 条件を満たさない場合は発射しない（連打しても弾が出ない）
+                if bird.shot_timer >= bird.shot_interval:
+                    # 発射したのでタイマーをリセット
+                    bird.shot_timer = 0
+
+                    # 元のコードの構造（Shift弾幕 / 通常単発）を維持する
+                    if pg.key.get_pressed()[pg.K_LSHIFT]:
+                        nb = NeoBeam(bird, 5)
+                        dmk = nb.gen_beams()
+                        beams.add(dmk)
+                    else:
+                        beams.add(Beam(bird))
                     beams.add(Beam(bird))
-                beams.add(Beam(bird))
+
+            # ============================================================
+            # skill 発動キー（追加機能）
+            # ============================================================
+            # ここでは「Qキー」でスキルを発動する設計にしている
+            # ・skill_count が 0 の場合は Bird.skill() が False を返し、発動しない
+            # ・発動した場合は
+            #   - 5秒無敵（invincible=True, invincible_timer=250フレーム）
+            #   - shot_interval を 10 → 5 に変更（発射レート上昇）
+            #   - skill_count を 1 減らす（回数消費）
+            if event.type == pg.KEYDOWN and event.key == pg.K_x:
+                bird.skill(fps=50)
+
             if event.type == pg.KEYDOWN and event.key == pg.K_e:
                 if score.value >= 20 and len(emps) == 0:
                     score.value -= 20
@@ -383,6 +492,19 @@ def main():
             score.value += 1
 
         for bomb in pg.sprite.spritecollide(bird, bombs, True):
+            # ============================================================
+            # skillの無敵判定（追加機能）
+            # ============================================================
+            # bird.invincible == True の間は爆弾に当たってもゲームオーバーにしない
+            #
+            # ここで True の場合：
+            # ・衝突した爆弾は spritecollide(..., True) によって消えている
+            # ・視覚的に分かりやすいように爆発エフェクトだけ追加する
+            # ・スコア加算は要件にないので行わない（挙動を余計に変えないため）
+            if getattr(bird, "invincible", False):
+                exps.add(Explosion(bomb, 50))
+                continue
+
             # EMPで無効化された爆弾ならゲームオーバーにしない
             if getattr(bomb, "inactive", False):
                 continue
