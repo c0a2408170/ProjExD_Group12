@@ -96,7 +96,7 @@ class Bird(pg.sprite.Sprite):
         # スキル使用回数（skill_count）
         # スキル発動のたびに 1 減り、0 のときは発動できない
         # 初期値はここで自由に調整可能（例として3回に設定）
-        self.skill_count = 0
+        self.skill_count = 3
 
     def skill(self, fps: int = 50) -> bool:
         """
@@ -399,6 +399,74 @@ class Gravity(pg.sprite.Sprite):
             self.kill()
 
 
+class SkillFlash(pg.sprite.Sprite):
+    """
+    スキル発動時に「画面が一瞬チカチカする」ことを表現するクラス（追加機能）
+
+    目的：
+    ・スキルを使用したときに、プレイヤーが「今スキルが発動した」と分かるようにする
+    ・画面全体に半透明の白い矩形を重ね、数フレームだけ明滅（チカチカ）させる
+
+    実装の考え方：
+    ・pygameでは「画面そのものを点滅」させるよりも、
+      画面に透明度付きのSurfaceを重ねて表示する方が簡単で安全
+    ・Spriteとして作ることで、既存のグループ描画処理に自然に組み込める
+    """
+    def __init__(self, life: int = 12, alpha_hi: int = 180, alpha_lo: int = 0):
+        """
+        引数1 life：
+        ・このフラッシュエフェクトが何フレーム存在するか
+        ・短いほど「一瞬チカッ」長いほど「しっかりチカチカ」する
+        ・例：12フレーム（50FPSなら約0.24秒）程度が “一瞬感” が出やすい
+        引数2 alpha_hi：
+        ・明るい側（チカッと光る側）の透明度（0～255）
+        引数3 alpha_lo：
+        ・暗い側（消える側）の透明度（0～255）
+        """
+        super().__init__()
+
+        # 画面全体を覆うSurfaceを作る（透過を使うのでSRCALPHAを指定）
+        self.image = pg.Surface((WIDTH, HEIGHT), flags=pg.SRCALPHA)
+
+        # 初期状態は白く光らせる（白い半透明の膜が画面を覆うイメージ）
+        # ここではRGB=(255,255,255)にし、alphaで透過度を制御する
+        self.image.fill((255, 255, 255, alpha_hi))
+
+        # 画面全体を覆うのでRectも画面サイズに合わせる
+        self.rect = self.image.get_rect()
+
+        # 残り寿命（フレーム数）
+        self.life = life
+
+        # 明滅に使う透明度を保持
+        self.alpha_hi = alpha_hi
+        self.alpha_lo = alpha_lo
+
+        # 何フレームごとに切り替えるか（1なら毎フレームで激しくチカチカ）
+        # ここでは2にして「2フレームごとにON/OFF」する（見た目が安定しやすい）
+        self.toggle_interval = 2
+
+    def update(self):
+        """
+        毎フレーム呼ばれて、エフェクトの寿命と明滅を制御する
+        """
+        # 寿命を減らす
+        self.life -= 1
+
+        # lifeが0以下になったらエフェクトを消す（Groupからも消える）
+        if self.life < 0:
+            self.kill()
+            return
+
+        # 明滅（チカチカ）処理：
+        # ・toggle_intervalごとに透明度を切り替える
+        # ・偶数/奇数フレームで alpha_hi / alpha_lo に切り替えることで点滅させる
+        if (self.life // self.toggle_interval) % 2 == 0:
+            self.image.fill((255, 255, 255, self.alpha_hi))
+        else:
+            self.image.fill((255, 255, 255, self.alpha_lo))
+
+
 def main():
     pg.display.set_caption("真！こうかとん無双")
     screen = pg.display.set_mode((WIDTH, HEIGHT))
@@ -414,6 +482,13 @@ def main():
 
     gravities = pg.sprite.Group()
     shields = pg.sprite.Group()
+
+    # ============================================================
+    # skill発動エフェクト（画面フラッシュ）用のグループ（追加機能）
+    # ============================================================
+    # 画面全体に重ねて描画するSpriteを入れておく
+    # スキル発動時にSkillFlashを生成してここに追加し、毎フレームupdate/drawする
+    skill_flashes = pg.sprite.Group()
 
     tmr = 0
     clock = pg.time.Clock()
@@ -458,8 +533,20 @@ def main():
             #   - 5秒無敵（invincible=True, invincible_timer=250フレーム）
             #   - shot_interval を 10 → 5 に変更（発射レート上昇）
             #   - skill_count を 1 減らす（回数消費）
-            if event.type == pg.KEYDOWN and event.key == pg.K_x:
-                bird.skill(fps=50)
+            #
+            # 追加要件：
+            # ・スキルを使用した時に使ったとわかるようなエフェクト
+            # ・画面が一瞬チカチカする
+            #
+            # → Bird.skill() が True（発動成功）を返したときだけ
+            #    SkillFlash を生成して skill_flashes に追加し、画面を明滅させる
+            if event.type == pg.KEYDOWN and event.key == pg.K_q:
+                if bird.skill(fps=50):
+                    # スキルが「成功して発動した」場合のみフラッシュを出す
+                    # life=12：短時間でチカチカする
+                    # alpha_hi=180：強めに光る
+                    # alpha_lo=0：消える（完全透明）
+                    skill_flashes.add(SkillFlash(life=12, alpha_hi=180, alpha_lo=0))
 
             if event.type == pg.KEYDOWN and event.key == pg.K_e:
                 if score.value >= 20 and len(emps) == 0:
@@ -547,6 +634,17 @@ def main():
         
         emps.update()
         emps.draw(screen)
+
+        # ============================================================
+        # skill発動エフェクト（画面フラッシュ）の更新・描画（追加機能）
+        # ============================================================
+        # 「画面がチカチカする」演出は、背景やキャラの上に重ねる必要がある。
+        # そのため描画順としては
+        #   1) 背景・キャラ・弾・爆発など全部描く
+        #   2) 最後にフラッシュを重ねる
+        # が自然（フラッシュが前面に出る）
+        skill_flashes.update()
+        skill_flashes.draw(screen)
 
         score.update(screen)
         pg.display.update()
